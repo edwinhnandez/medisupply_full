@@ -188,3 +188,4 @@ kubectl top pods -n event-mesh-system
 - **Observability**: Full tracing, metrics, and logging
 - **Scalability**: Kubernetes-native deployment
 - **Flexibility**: Support for both local and cloud deployments
+# medisupply_full
