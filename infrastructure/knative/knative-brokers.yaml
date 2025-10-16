@@ -1,0 +1,110 @@
+# Knative Eventing Brokers for Cross-Broker Event Routing
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: event-mesh-system
+  labels:
+    knative-eventing-injection: enabled
+---
+# Default Broker for the event-mesh-system namespace
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: default
+  namespace: event-mesh-system
+  annotations:
+    eventing.knative.dev/broker.class: MTChannelBasedBroker
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: kafka-channel-config
+    namespace: knative-eventing
+---
+# Kafka Broker for Kafka events
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: kafka-broker
+  namespace: event-mesh-system
+  annotations:
+    eventing.knative.dev/broker.class: Kafka
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: kafka-broker-config
+    namespace: knative-eventing
+---
+# RabbitMQ Broker for RabbitMQ events
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: rabbitmq-broker
+  namespace: event-mesh-system
+  annotations:
+    eventing.knative.dev/broker.class: MTChannelBasedBroker
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: rabbitmq-channel-config
+    namespace: knative-eventing
+---
+# Pulsar Broker for Pulsar events
+apiVersion: eventing.knative.dev/v1
+kind: Broker
+metadata:
+  name: pulsar-broker
+  namespace: event-mesh-system
+  annotations:
+    eventing.knative.dev/broker.class: MTChannelBasedBroker
+spec:
+  config:
+    apiVersion: v1
+    kind: ConfigMap
+    name: pulsar-channel-config
+    namespace: knative-eventing
+---
+# Configuration for Kafka Channel
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-channel-config
+  namespace: knative-eventing
+data:
+  bootstrap.servers: "kafka-simple:9092"
+  default.topic.partitions: "3"
+  default.topic.replication.factor: "1"
+---
+# Configuration for Kafka Broker
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kafka-broker-config
+  namespace: knative-eventing
+data:
+  bootstrap.servers: "kafka-simple:9092"
+  default.topic.partitions: "3"
+  default.topic.replication.factor: "1"
+---
+# Configuration for RabbitMQ Channel
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-channel-config
+  namespace: knative-eventing
+data:
+  rabbitmq.url: "amqp://guest:guest@rabbitmq-service:5672/"
+  rabbitmq.exchange: "knative-events"
+  rabbitmq.queue: "knative-events-queue"
+---
+# Configuration for Pulsar Channel
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pulsar-channel-config
+  namespace: knative-eventing
+data:
+  pulsar.url: "pulsar://pulsar-broker:6650"
+  pulsar.topic: "knative-events"

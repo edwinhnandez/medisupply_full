@@ -1,0 +1,246 @@
+# Knative Eventing Core Installation
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knative-eventing
+  labels:
+    knative-eventing-injection: enabled
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knative-sources
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: knative-serving
+---
+# Knative Eventing CRDs and Core Components
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: brokers.eventing.knative.dev
+spec:
+  group: eventing.knative.dev
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              config:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  namespace:
+                    type: string
+          status:
+            type: object
+            properties:
+              address:
+                type: object
+                properties:
+                  url:
+                    type: string
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    reason:
+                      type: string
+                    message:
+                      type: string
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: triggers.eventing.knative.dev
+spec:
+  group: eventing.knative.dev
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              broker:
+                type: string
+              filter:
+                type: object
+                properties:
+                  attributes:
+                    type: object
+              subscriber:
+                type: object
+                properties:
+                  ref:
+                    type: object
+                    properties:
+                      apiVersion:
+                        type: string
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                  uri:
+                    type: string
+          status:
+            type: object
+            properties:
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    reason:
+                      type: string
+                    message:
+                      type: string
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: kafkasources.sources.knative.dev
+spec:
+  group: sources.knative.dev
+  versions:
+  - name: v1beta1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              bootstrapServers:
+                type: array
+                items:
+                  type: string
+              topics:
+                type: array
+                items:
+                  type: string
+              consumerGroup:
+                type: string
+              sink:
+                type: object
+                properties:
+                  ref:
+                    type: object
+                    properties:
+                      apiVersion:
+                        type: string
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                  uri:
+                    type: string
+          status:
+            type: object
+            properties:
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    reason:
+                      type: string
+                    message:
+                      type: string
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: apiserversources.sources.knative.dev
+spec:
+  group: sources.knative.dev
+  versions:
+  - name: v1
+    served: true
+    storage: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              serviceAccountName:
+                type: string
+              mode:
+                type: string
+              resources:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    apiVersion:
+                      type: string
+                    kind:
+                      type: string
+                    selector:
+                      type: object
+              sink:
+                type: object
+                properties:
+                  ref:
+                    type: object
+                    properties:
+                      apiVersion:
+                        type: string
+                      kind:
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                  uri:
+                    type: string
+          status:
+            type: object
+            properties:
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    reason:
+                      type: string
+                    message:
+                      type: string

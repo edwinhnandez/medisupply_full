@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingreso-inventario
+  namespace: event-mesh-system
+  labels:
+    app: ingreso-inventario
+    service: ingreso-inventario
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: ingreso-inventario
+  template:
+    metadata:
+      labels:
+        app: ingreso-inventario
+        service: ingreso-inventario
+    spec:
+      containers:
+      - name: ingreso-inventario
+        image: ingreso-inventario:latest
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: SERVICE_PORT
+          value: "8000"
+        - name: PULSAR_SERVICE_URL
+          value: "pulsar://pulsar-broker:6650"
+        - name: PULSAR_ADMIN_URL
+          value: "http://pulsar-broker:8080"
+        - name: PULSAR_TOPIC
+          value: "persistent://public/default/InventarioRecibido"
+        - name: DYNAMODB_ENDPOINT
+          value: "http://dynamodb-local:8000"
+        - name: DYNAMODB_REGION
+          value: "us-east-1"
+        - name: JAEGER_ENDPOINT
+          value: "http://jaeger-collector:14268/api/traces"
+        - name: ENVIRONMENT
+          value: "production"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "250m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: app-logs
+          mountPath: /app/logs
+      volumes:
+      - name: app-logs
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingreso-inventario-service
+  namespace: event-mesh-system
+  labels:
+    app: ingreso-inventario
+    service: ingreso-inventario
+spec:
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  selector:
+    app: ingreso-inventario

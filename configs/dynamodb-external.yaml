@@ -1,0 +1,71 @@
+# External DynamoDB Configuration Template
+# Copy this file and customize it for your AWS DynamoDB setup
+
+# Environment variables for Python services (movimiento-inventario)
+python_env:
+  DYNAMODB_ENDPOINT_URL: ""  # Leave empty for AWS DynamoDB
+  DYNAMODB_REGION: "us-east-1"  # Change to your AWS region
+  DYNAMODB_ACCESS_KEY: "YOUR_AWS_ACCESS_KEY_ID"  # Replace with your AWS access key
+  DYNAMODB_SECRET_KEY: "YOUR_AWS_SECRET_ACCESS_KEY"  # Replace with your AWS secret key
+
+# Environment variables for Go services (orden-compra, proveedor)
+go_env:
+  AWS_REGION: "us-east-1"  # Change to your AWS region
+  AWS_ACCESS_KEY_ID: "YOUR_AWS_ACCESS_KEY_ID"  # Replace with your AWS access key
+  AWS_SECRET_ACCESS_KEY: "YOUR_AWS_SECRET_ACCESS_KEY"  # Replace with your AWS secret key
+
+# Required DynamoDB tables
+tables:
+  movimiento-inventario:
+    - movimiento-inventario-events
+    - movimiento-inventario-read
+  orden-compra:
+    - orden-compra-events
+    - orden-compra-read
+  proveedor:
+    - proveedor-events
+    - proveedor-read
+  ingreso-inventario:
+    - ingreso-inventario-events
+    - ingreso-inventario-read
+
+# Table schemas
+table_schemas:
+  events_table:
+    KeySchema:
+      - AttributeName: "id"
+        KeyType: "HASH"
+      - AttributeName: "timestamp"
+        KeyType: "RANGE"
+    AttributeDefinitions:
+      - AttributeName: "id"
+        AttributeType: "S"
+      - AttributeName: "timestamp"
+        AttributeType: "S"
+    BillingMode: "PAY_PER_REQUEST"
+  
+  read_table:
+    KeySchema:
+      - AttributeName: "id"
+        KeyType: "HASH"
+    AttributeDefinitions:
+      - AttributeName: "id"
+        AttributeType: "S"
+    BillingMode: "PAY_PER_REQUEST"
+
+# AWS IAM permissions required
+iam_permissions:
+  - dynamodb:GetItem
+  - dynamodb:PutItem
+  - dynamodb:UpdateItem
+  - dynamodb:DeleteItem
+  - dynamodb:Query
+  - dynamodb:Scan
+  - dynamodb:DescribeTable
+
+# Security best practices
+security:
+  use_iam_roles: true  # Recommended over access keys
+  use_secrets_manager: true  # For storing credentials
+  enable_encryption: true  # Encryption at rest
+  use_vpc_endpoints: false  # For private network access

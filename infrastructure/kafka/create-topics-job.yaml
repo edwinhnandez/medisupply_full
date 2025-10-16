@@ -1,0 +1,29 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: kafka-create-topics
+  namespace: event-mesh-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: kafka-create-topics
+        image: confluentinc/cp-kafka:7.4.0
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for Kafka to be ready..."
+          sleep 30
+          
+          echo "Creating topic FallaCadenaFrio..."
+          kafka-topics --create --topic FallaCadenaFrio --bootstrap-server kafka-broker:9092 --partitions 1 --replication-factor 1 || echo "Topic might already exist"
+          
+          echo "Creating topic StockBajo..."
+          kafka-topics --create --topic StockBajo --bootstrap-server kafka-broker:9092 --partitions 1 --replication-factor 1 || echo "Topic might already exist"
+          
+          echo "Listing topics..."
+          kafka-topics --list --bootstrap-server kafka-broker:9092
+          
+          echo "Topics created successfully!"

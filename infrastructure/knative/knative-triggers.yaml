@@ -1,0 +1,373 @@
+# Knative Eventing Triggers for Cross-Broker Event Routing
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: event-mesh-system
+  labels:
+    knative-eventing-injection: enabled
+---
+# Service for Kafka to RabbitMQ Bridge
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka-to-rabbitmq-bridge
+  namespace: event-mesh-system
+spec:
+  selector:
+    app: kafka-to-rabbitmq-bridge
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# Deployment for Kafka to RabbitMQ Bridge
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kafka-to-rabbitmq-bridge
+  namespace: event-mesh-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka-to-rabbitmq-bridge
+  template:
+    metadata:
+      labels:
+        app: kafka-to-rabbitmq-bridge
+    spec:
+      containers:
+      - name: bridge
+        image: python:3.9-alpine
+        ports:
+        - containerPort: 8080
+        env:
+        - name: RABBITMQ_URL
+          value: "amqp://guest:guest@rabbitmq-service:5672/"
+        - name: RABBITMQ_EXCHANGE
+          value: "stock-bajo-exchange"
+        - name: RABBITMQ_ROUTING_KEY
+          value: "stock.bajo"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "25m"
+          limits:
+            memory: "128Mi"
+            cpu: "50m"
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "Installing dependencies..."
+            pip install --no-cache-dir pika requests
+            
+            echo "Creating Kafka to RabbitMQ Bridge Service..."
+            cat > /tmp/bridge.py << 'EOF'
+            import json
+            import logging
+            import time
+            import pika
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            import threading
+            
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+            
+            class KafkaToRabbitMQBridge:
+                def __init__(self):
+                    self.rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq-service:5672/")
+                    self.rabbitmq_exchange = os.getenv("RABBITMQ_EXCHANGE", "stock-bajo-exchange")
+                    self.rabbitmq_routing_key = os.getenv("RABBITMQ_ROUTING_KEY", "stock.bajo")
+                    self.connection = None
+                    self.channel = None
+                    self.metrics = {
+                        'messages_processed': 0,
+                        'errors': 0
+                    }
+                
+                def connect_rabbitmq(self):
+                    try:
+                        self.connection = pika.BlockingConnection(
+                            pika.URLParameters(self.rabbitmq_url)
+                        )
+                        self.channel = self.connection.channel()
+                        self.channel.exchange_declare(exchange=self.rabbitmq_exchange, exchange_type='topic', durable=True, passive=True)
+                        logger.info("Connected to RabbitMQ")
+                        return True
+                    except Exception as e:
+                        logger.error("Failed to connect to RabbitMQ: " + str(e))
+                        return False
+                
+                def process_event(self, event_data):
+                    try:
+                        if not self.connection or not self.connection.is_open:
+                            if not self.connect_rabbitmq():
+                                return False
+                        
+                        # Forward event to RabbitMQ
+                        self.channel.basic_publish(
+                            exchange=self.rabbitmq_exchange,
+                            routing_key=self.rabbitmq_routing_key,
+                            body=json.dumps(event_data)
+                        )
+                        self.metrics['messages_processed'] += 1
+                        logger.info("Event forwarded to RabbitMQ: " + str(event_data)[:100] + "...")
+                        return True
+                    except Exception as e:
+                        logger.error("Error processing event: " + str(e))
+                        self.metrics['errors'] += 1
+                        return False
+                
+                def get_metrics(self):
+                    return self.metrics
+            
+            bridge = KafkaToRabbitMQBridge()
+            
+            class EventHandler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    if self.path == '/':
+                        content_length = int(self.headers['Content-Length'])
+                        post_data = self.rfile.read(content_length)
+                        try:
+                            event_data = json.loads(post_data.decode('utf-8'))
+                            if bridge.process_event(event_data):
+                                self.send_response(200)
+                                self.send_header('Content-type', 'application/json')
+                                self.end_headers()
+                                self.wfile.write(json.dumps({"status": "success"}).encode())
+                            else:
+                                self.send_response(500)
+                                self.send_header('Content-type', 'application/json')
+                                self.end_headers()
+                                self.wfile.write(json.dumps({"status": "error"}).encode())
+                        except Exception as e:
+                            logger.error("Error processing request: " + str(e))
+                            self.send_response(400)
+                            self.send_header('Content-type', 'application/json')
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def do_GET(self):
+                    if self.path == '/health':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"status": "healthy"}).encode())
+                    elif self.path == '/metrics':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps(bridge.get_metrics()).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def log_message(self, format, *args):
+                    pass
+            
+            httpd = HTTPServer(('', 8080), EventHandler)
+            logger.info("Kafka to RabbitMQ Bridge HTTP server started on port 8080")
+            httpd.serve_forever()
+            EOF
+            
+            echo "Starting Kafka to RabbitMQ Bridge..."
+            python3 /tmp/bridge.py
+---
+# Trigger: Kafka StockBajo events -> RabbitMQ Bridge
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: kafka-stockbajo-to-rabbitmq
+  namespace: event-mesh-system
+spec:
+  broker: kafka-broker
+  filter:
+    attributes:
+      type: "com.coldchain.stockbajo"
+      source: "movimiento-inventario"
+  subscriber:
+    ref:
+      apiVersion: v1
+      kind: Service
+      name: kafka-to-rabbitmq-bridge
+---
+# Service for RabbitMQ to Pulsar Bridge
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-to-pulsar-bridge
+  namespace: event-mesh-system
+spec:
+  selector:
+    app: rabbitmq-to-pulsar-bridge
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# Deployment for RabbitMQ to Pulsar Bridge
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq-to-pulsar-bridge
+  namespace: event-mesh-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq-to-pulsar-bridge
+  template:
+    metadata:
+      labels:
+        app: rabbitmq-to-pulsar-bridge
+    spec:
+      containers:
+      - name: bridge
+        image: python:3.9-alpine
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PULSAR_URL
+          value: "pulsar://pulsar-broker:6650"
+        - name: PULSAR_TOPIC
+          value: "InventarioRecibido"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "25m"
+          limits:
+            memory: "128Mi"
+            cpu: "50m"
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "Installing dependencies..."
+            pip install --no-cache-dir pulsar-client requests
+            
+            echo "Creating RabbitMQ to Pulsar Bridge Service..."
+            cat > /tmp/bridge.py << 'EOF'
+            import json
+            import logging
+            import time
+            import pulsar
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            import threading
+            
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+            
+            class RabbitMQToPulsarBridge:
+                def __init__(self):
+                    self.pulsar_url = os.getenv("PULSAR_URL", "pulsar://pulsar-broker:6650")
+                    self.pulsar_topic = os.getenv("PULSAR_TOPIC", "InventarioRecibido")
+                    self.pulsar_client = None
+                    self.pulsar_producer = None
+                    self.metrics = {
+                        'messages_processed': 0,
+                        'errors': 0
+                    }
+                
+                def connect_pulsar(self):
+                    try:
+                        self.pulsar_client = pulsar.Client(self.pulsar_url)
+                        self.pulsar_producer = self.pulsar_client.create_producer(self.pulsar_topic)
+                        logger.info("Connected to Pulsar")
+                        return True
+                    except Exception as e:
+                        logger.error("Failed to connect to Pulsar: " + str(e))
+                        return False
+                
+                def process_event(self, event_data):
+                    try:
+                        if not self.pulsar_client or not self.pulsar_producer:
+                            if not self.connect_pulsar():
+                                return False
+                        
+                        # Forward event to Pulsar
+                        self.pulsar_producer.send(json.dumps(event_data).encode('utf-8'))
+                        self.metrics['messages_processed'] += 1
+                        logger.info("Event forwarded to Pulsar: " + str(event_data)[:100] + "...")
+                        return True
+                    except Exception as e:
+                        logger.error("Error processing event: " + str(e))
+                        self.metrics['errors'] += 1
+                        return False
+                
+                def get_metrics(self):
+                    return self.metrics
+            
+            bridge = RabbitMQToPulsarBridge()
+            
+            class EventHandler(BaseHTTPRequestHandler):
+                def do_POST(self):
+                    if self.path == '/':
+                        content_length = int(self.headers['Content-Length'])
+                        post_data = self.rfile.read(content_length)
+                        try:
+                            event_data = json.loads(post_data.decode('utf-8'))
+                            if bridge.process_event(event_data):
+                                self.send_response(200)
+                                self.send_header('Content-type', 'application/json')
+                                self.end_headers()
+                                self.wfile.write(json.dumps({"status": "success"}).encode())
+                            else:
+                                self.send_response(500)
+                                self.send_header('Content-type', 'application/json')
+                                self.end_headers()
+                                self.wfile.write(json.dumps({"status": "error"}).encode())
+                        except Exception as e:
+                            logger.error("Error processing request: " + str(e))
+                            self.send_response(400)
+                            self.send_header('Content-type', 'application/json')
+                            self.end_headers()
+                            self.wfile.write(json.dumps({"status": "error", "message": str(e)}).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def do_GET(self):
+                    if self.path == '/health':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"status": "healthy"}).encode())
+                    elif self.path == '/metrics':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps(bridge.get_metrics()).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def log_message(self, format, *args):
+                    pass
+            
+            httpd = HTTPServer(('', 8080), EventHandler)
+            logger.info("RabbitMQ to Pulsar Bridge HTTP server started on port 8080")
+            httpd.serve_forever()
+            EOF
+            
+            echo "Starting RabbitMQ to Pulsar Bridge..."
+            python3 /tmp/bridge.py
+---
+# Trigger: RabbitMQ InventarioRecibido events -> Pulsar Bridge
+apiVersion: eventing.knative.dev/v1
+kind: Trigger
+metadata:
+  name: rabbitmq-inventario-to-pulsar
+  namespace: event-mesh-system
+spec:
+  broker: rabbitmq-broker
+  filter:
+    attributes:
+      type: "com.coldchain.inventariorecibido"
+      source: "proveedor"
+  subscriber:
+    ref:
+      apiVersion: v1
+      kind: Service
+      name: rabbitmq-to-pulsar-bridge

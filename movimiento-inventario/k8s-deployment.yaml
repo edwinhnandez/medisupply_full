@@ -1,0 +1,126 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: movimiento-inventario
+  namespace: event-mesh-system
+  labels:
+    app: movimiento-inventario
+    service: movimiento-inventario
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: movimiento-inventario
+  template:
+    metadata:
+      labels:
+        app: movimiento-inventario
+        service: movimiento-inventario
+    spec:
+      containers:
+      - name: movimiento-inventario
+        image: movimiento-inventario:v3
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka-simple:9092"
+        - name: KAFKA_INPUT_TOPIC
+          value: "FallaCadenaFrio"
+        - name: KAFKA_OUTPUT_TOPIC
+          value: "StockBajo"
+        - name: KAFKA_GROUP_ID
+          value: "movimiento-inventario-group"
+        # DynamoDB Configuration
+        # For LOCAL DynamoDB (current setup):
+        - name: DYNAMODB_ENDPOINT_URL
+          value: "http://dynamodb-local:8000"
+        - name: DYNAMODB_REGION
+          value: "us-east-1"
+        - name: DYNAMODB_ACCESS_KEY
+          value: "dummy"
+        - name: DYNAMODB_SECRET_KEY
+          value: "dummy"
+        # For EXTERNAL DynamoDB (AWS):
+        # Remove DYNAMODB_ENDPOINT_URL line above
+        # Change DYNAMODB_REGION to your AWS region
+        # Change DYNAMODB_ACCESS_KEY to your AWS access key
+        # Change DYNAMODB_SECRET_KEY to your AWS secret key
+        - name: JAEGER_AGENT_HOST
+          value: "jaeger-agent"
+        - name: JAEGER_AGENT_PORT
+          value: "6831"
+        - name: JAEGER_ENDPOINT
+          value: "http://jaeger-collector:14268/api/traces"
+        - name: ENVIRONMENT
+          value: "production"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: app-logs
+          mountPath: /app/logs
+      volumes:
+      - name: app-logs
+        emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: movimiento-inventario-service
+  namespace: event-mesh-system
+  labels:
+    app: movimiento-inventario
+    service: movimiento-inventario
+spec:
+  ports:
+  - port: 8000
+    targetPort: 8000
+    name: http
+  selector:
+    app: movimiento-inventario
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: movimiento-inventario-config
+  namespace: event-mesh-system
+data:
+  log4j2.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <Configuration status="WARN">
+      <Appenders>
+        <Console name="Console" target="SYSTEM_OUT">
+          <PatternLayout pattern="%d{yyyy-MM-dd HH:mm:ss.SSS} [%t] %-5level %logger{36} - %msg%n"/>
+        </Console>
+      </Appenders>
+      <Loggers>
+        <Root level="INFO">
+          <AppenderRef ref="Console"/>
+        </Root>
+      </Loggers>
+    </Configuration>

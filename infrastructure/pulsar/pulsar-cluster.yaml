@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: pulsar
+  namespace: event-mesh-system
+spec:
+  serviceName: pulsar
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsar
+  template:
+    metadata:
+      labels:
+        app: pulsar
+    spec:
+      containers:
+      - name: pulsar
+        image: apachepulsar/pulsar:3.1.0
+        command:
+        - sh
+        - -c
+        - |
+          bin/pulsar standalone \
+            --no-functions-worker \
+            --no-stream-storage
+        ports:
+        - containerPort: 6650
+          name: pulsar
+        - containerPort: 8080
+          name: admin
+        env:
+        - name: PULSAR_MEM
+          value: "-Xms128m -Xmx256m -XX:MaxDirectMemorySize=256m"
+        - name: PULSAR_GC
+          value: "-XX:+UseG1GC -XX:MaxGCPauseMillis=10"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "250m"
+        volumeMounts:
+        - name: pulsar-storage
+          mountPath: /pulsar/data
+        livenessProbe:
+          tcpSocket:
+            port: 6650
+          initialDelaySeconds: 60
+          periodSeconds: 30
+        readinessProbe:
+          tcpSocket:
+            port: 6650
+          initialDelaySeconds: 30
+          periodSeconds: 10
+  volumeClaimTemplates:
+  - metadata:
+      name: pulsar-storage
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsar-broker
+  namespace: event-mesh-system
+spec:
+  ports:
+  - port: 6650
+    targetPort: 6650
+    name: pulsar
+  - port: 8080
+    targetPort: 8080
+    name: admin
+  selector:
+    app: pulsar
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pulsar-topic-setup
+  namespace: event-mesh-system
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: pulsar-topic-setup
+        image: apachepulsar/pulsar:3.1.0
+        command:
+        - sh
+        - -c
+        - |
+          sleep 30
+          bin/pulsar-admin topics create persistent://public/default/InventarioRecibido
+          bin/pulsar-admin topics list public/default

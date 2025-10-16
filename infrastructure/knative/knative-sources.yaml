@@ -1,0 +1,423 @@
+# Knative Eventing Sources for Message Brokers
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: event-mesh-system
+  labels:
+    knative-eventing-injection: enabled
+---
+# Kafka Source for StockBajo topic
+apiVersion: sources.knative.dev/v1beta1
+kind: KafkaSource
+metadata:
+  name: kafka-stockbajo-source
+  namespace: event-mesh-system
+spec:
+  bootstrapServers:
+  - kafka-simple:9092
+  topics:
+  - StockBajo
+  consumerGroup: knative-kafka-consumer
+  sink:
+    ref:
+      apiVersion: eventing.knative.dev/v1
+      kind: Broker
+      name: kafka-broker
+---
+# Service for RabbitMQ Event Source
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq-event-source
+  namespace: event-mesh-system
+spec:
+  selector:
+    app: rabbitmq-event-source
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# Deployment for RabbitMQ Event Source
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rabbitmq-event-source
+  namespace: event-mesh-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rabbitmq-event-source
+  template:
+    metadata:
+      labels:
+        app: rabbitmq-event-source
+    spec:
+      containers:
+      - name: source
+        image: python:3.9-alpine
+        ports:
+        - containerPort: 8080
+        env:
+        - name: RABBITMQ_URL
+          value: "amqp://guest:guest@rabbitmq-service:5672/"
+        - name: RABBITMQ_QUEUE
+          value: "inventario-recibido-queue"
+        - name: KNATIVE_BROKER_URL
+          value: "http://rabbitmq-broker-kn-channel.event-mesh-system.svc.cluster.local"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "25m"
+          limits:
+            memory: "128Mi"
+            cpu: "50m"
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "Installing dependencies..."
+            pip install --no-cache-dir pika requests
+            
+            echo "Creating RabbitMQ Event Source..."
+            cat > /tmp/source.py << 'EOF'
+            import json
+            import logging
+            import time
+            import pika
+            import requests
+            import threading
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+            
+            class RabbitMQEventSource:
+                def __init__(self):
+                    self.rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@rabbitmq-service:5672/")
+                    self.rabbitmq_queue = os.getenv("RABBITMQ_QUEUE", "inventario-recibido-queue")
+                    self.knative_broker_url = os.getenv("KNATIVE_BROKER_URL", "http://rabbitmq-broker-kn-channel.event-mesh-system.svc.cluster.local")
+                    self.connection = None
+                    self.channel = None
+                    self.running = True
+                    self.metrics = {
+                        'messages_processed': 0,
+                        'errors': 0
+                    }
+                
+                def connect_rabbitmq(self):
+                    try:
+                        self.connection = pika.BlockingConnection(
+                            pika.URLParameters(self.rabbitmq_url)
+                        )
+                        self.channel = self.connection.channel()
+                        self.channel.queue_declare(queue=self.rabbitmq_queue, durable=True, passive=True)
+                        self.channel.basic_qos(prefetch_count=1)
+                        logger.info("Connected to RabbitMQ")
+                        return True
+                    except Exception as e:
+                        logger.error("Failed to connect to RabbitMQ: " + str(e))
+                        return False
+                
+                def send_to_knative(self, message_body):
+                    try:
+                        # Create CloudEvent format
+                        cloud_event = {
+                            "specversion": "1.0",
+                            "type": "com.coldchain.inventariorecibido",
+                            "source": "rabbitmq-event-source",
+                            "id": f"rabbitmq-{int(time.time() * 1000)}",
+                            "time": time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            "datacontenttype": "application/json",
+                            "data": json.loads(message_body)
+                        }
+                        
+                        # Send to Knative broker
+                        response = requests.post(
+                            self.knative_broker_url,
+                            json=cloud_event,
+                            headers={"Content-Type": "application/json"},
+                            timeout=10
+                        )
+                        
+                        if response.status_code == 202:
+                            self.metrics['messages_processed'] += 1
+                            logger.info("Event sent to Knative broker: " + str(cloud_event)[:100] + "...")
+                            return True
+                        else:
+                            logger.error(f"Failed to send to Knative broker: {response.status_code} - {response.text}")
+                            self.metrics['errors'] += 1
+                            return False
+                    except Exception as e:
+                        logger.error("Error sending to Knative: " + str(e))
+                        self.metrics['errors'] += 1
+                        return False
+                
+                def callback(self, ch, method, properties, body):
+                    try:
+                        if self.send_to_knative(body.decode('utf-8')):
+                            ch.basic_ack(delivery_tag=method.delivery_tag)
+                        else:
+                            ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                    except Exception as e:
+                        logger.error("Error processing message: " + str(e))
+                        self.metrics['errors'] += 1
+                        ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
+                
+                def start_consuming(self):
+                    logger.info("Starting RabbitMQ event source")
+                    while self.running:
+                        if not self.connection or not self.connection.is_open:
+                            if not self.connect_rabbitmq():
+                                time.sleep(5)
+                                continue
+                        
+                        try:
+                            self.channel.basic_consume(
+                                queue=self.rabbitmq_queue,
+                                on_message_callback=self.callback
+                            )
+                            self.channel.start_consuming()
+                        except pika.exceptions.AMQPConnectionError:
+                            logger.warning("RabbitMQ connection lost, attempting to reconnect...")
+                            self.connection = None
+                        except Exception as e:
+                            logger.error("Error in consumer loop: " + str(e))
+                            time.sleep(5)
+                
+                def stop(self):
+                    self.running = False
+                    if self.channel:
+                        self.channel.stop_consuming()
+                    if self.connection and self.connection.is_open:
+                        self.connection.close()
+                
+                def get_metrics(self):
+                    return self.metrics
+            
+            source = RabbitMQEventSource()
+            
+            class HealthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/health':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"status": "healthy"}).encode())
+                    elif self.path == '/metrics':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps(source.get_metrics()).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def log_message(self, format, *args):
+                    pass
+            
+            # Start consuming in a separate thread
+            consumer_thread = threading.Thread(target=source.start_consuming, daemon=True)
+            consumer_thread.start()
+            
+            # Start HTTP server for health checks
+            httpd = HTTPServer(('', 8080), HealthHandler)
+            logger.info("RabbitMQ Event Source HTTP server started on port 8080")
+            httpd.serve_forever()
+            EOF
+            
+            echo "Starting RabbitMQ Event Source..."
+            python3 /tmp/source.py
+---
+# Service for Pulsar Event Source
+apiVersion: v1
+kind: Service
+metadata:
+  name: pulsar-event-source
+  namespace: event-mesh-system
+spec:
+  selector:
+    app: pulsar-event-source
+  ports:
+  - port: 8080
+    targetPort: 8080
+---
+# Deployment for Pulsar Event Source
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pulsar-event-source
+  namespace: event-mesh-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: pulsar-event-source
+  template:
+    metadata:
+      labels:
+        app: pulsar-event-source
+    spec:
+      containers:
+      - name: source
+        image: python:3.9-alpine
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PULSAR_URL
+          value: "pulsar://pulsar-broker:6650"
+        - name: PULSAR_TOPIC
+          value: "InventarioRecibido"
+        - name: KNATIVE_BROKER_URL
+          value: "http://pulsar-broker-kn-channel.event-mesh-system.svc.cluster.local"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "25m"
+          limits:
+            memory: "128Mi"
+            cpu: "50m"
+        command: ["/bin/sh"]
+        args:
+          - -c
+          - |
+            echo "Installing dependencies..."
+            pip install --no-cache-dir pulsar-client requests
+            
+            echo "Creating Pulsar Event Source..."
+            cat > /tmp/source.py << 'EOF'
+            import json
+            import logging
+            import time
+            import pulsar
+            import requests
+            import threading
+            from http.server import HTTPServer, BaseHTTPRequestHandler
+            
+            logging.basicConfig(level=logging.INFO)
+            logger = logging.getLogger(__name__)
+            
+            class PulsarEventSource:
+                def __init__(self):
+                    self.pulsar_url = os.getenv("PULSAR_URL", "pulsar://pulsar-broker:6650")
+                    self.pulsar_topic = os.getenv("PULSAR_TOPIC", "InventarioRecibido")
+                    self.knative_broker_url = os.getenv("KNATIVE_BROKER_URL", "http://pulsar-broker-kn-channel.event-mesh-system.svc.cluster.local")
+                    self.pulsar_client = None
+                    self.pulsar_consumer = None
+                    self.running = True
+                    self.metrics = {
+                        'messages_processed': 0,
+                        'errors': 0
+                    }
+                
+                def connect_pulsar(self):
+                    try:
+                        self.pulsar_client = pulsar.Client(self.pulsar_url)
+                        self.pulsar_consumer = self.pulsar_client.subscribe(
+                            self.pulsar_topic,
+                            subscription_name="knative-pulsar-consumer"
+                        )
+                        logger.info("Connected to Pulsar")
+                        return True
+                    except Exception as e:
+                        logger.error("Failed to connect to Pulsar: " + str(e))
+                        return False
+                
+                def send_to_knative(self, message_data):
+                    try:
+                        # Create CloudEvent format
+                        cloud_event = {
+                            "specversion": "1.0",
+                            "type": "com.coldchain.inventariorecibido",
+                            "source": "pulsar-event-source",
+                            "id": f"pulsar-{int(time.time() * 1000)}",
+                            "time": time.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            "datacontenttype": "application/json",
+                            "data": json.loads(message_data)
+                        }
+                        
+                        # Send to Knative broker
+                        response = requests.post(
+                            self.knative_broker_url,
+                            json=cloud_event,
+                            headers={"Content-Type": "application/json"},
+                            timeout=10
+                        )
+                        
+                        if response.status_code == 202:
+                            self.metrics['messages_processed'] += 1
+                            logger.info("Event sent to Knative broker: " + str(cloud_event)[:100] + "...")
+                            return True
+                        else:
+                            logger.error(f"Failed to send to Knative broker: {response.status_code} - {response.text}")
+                            self.metrics['errors'] += 1
+                            return False
+                    except Exception as e:
+                        logger.error("Error sending to Knative: " + str(e))
+                        self.metrics['errors'] += 1
+                        return False
+                
+                def start_consuming(self):
+                    logger.info("Starting Pulsar event source")
+                    while self.running:
+                        if not self.pulsar_client or not self.pulsar_consumer:
+                            if not self.connect_pulsar():
+                                time.sleep(5)
+                                continue
+                        
+                        try:
+                            msg = self.pulsar_consumer.receive(timeout_millis=1000)
+                            if msg:
+                                message_data = msg.data().decode('utf-8')
+                                if self.send_to_knative(message_data):
+                                    self.pulsar_consumer.acknowledge(msg)
+                                else:
+                                    self.pulsar_consumer.negative_acknowledge(msg)
+                        except Exception as e:
+                            logger.error("Error consuming from Pulsar: " + str(e))
+                            self.metrics['errors'] += 1
+                            time.sleep(5)
+                
+                def stop(self):
+                    self.running = False
+                    if self.pulsar_consumer:
+                        self.pulsar_consumer.close()
+                    if self.pulsar_client:
+                        self.pulsar_client.close()
+                
+                def get_metrics(self):
+                    return self.metrics
+            
+            source = PulsarEventSource()
+            
+            class HealthHandler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/health':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"status": "healthy"}).encode())
+                    elif self.path == '/metrics':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(json.dumps(source.get_metrics()).encode())
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def log_message(self, format, *args):
+                    pass
+            
+            # Start consuming in a separate thread
+            consumer_thread = threading.Thread(target=source.start_consuming, daemon=True)
+            consumer_thread.start()
+            
+            # Start HTTP server for health checks
+            httpd = HTTPServer(('', 8080), HealthHandler)
+            logger.info("Pulsar Event Source HTTP server started on port 8080")
+            httpd.serve_forever()
+            EOF
+            
+            echo "Starting Pulsar Event Source..."
+            python3 /tmp/source.py

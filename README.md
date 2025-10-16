@@ -34,7 +34,7 @@ External System → Kafka (FallaCadenaFrio) → MovimientoInventario (Python)
 ## Technologies
 
 - **Message Brokers**: Kafka, RabbitMQ, Pulsar
-- **Event Mesh**: Custom Python-based bridge for cross-broker routing
+- **Event Mesh**: Knative Eventing for cloud-native event routing
 - **Database**: DynamoDB with CQRS pattern (supports both local and external)
 - **Observability**: OpenTelemetry, Jaeger, Prometheus, Grafana
 - **Orchestration**: Kubernetes
@@ -76,8 +76,11 @@ kubectl apply -f infrastructure/rabbitmq/rabbitmq-cluster.yaml -n event-mesh-sys
 kubectl apply -f infrastructure/pulsar/pulsar-cluster.yaml -n event-mesh-system
 kubectl apply -f infrastructure/dynamodb-local/dynamodb.yaml -n event-mesh-system
 
-# 3. Deploy EventMesh Bridge
-kubectl apply -f infrastructure/event-mesh/eventmesh-bridge.yaml -n event-mesh-system
+# 3. Deploy Knative Eventing
+kubectl apply -f infrastructure/knative/knative-install.yaml -n event-mesh-system
+kubectl apply -f infrastructure/knative/knative-brokers.yaml -n event-mesh-system
+kubectl apply -f infrastructure/knative/knative-sources.yaml -n event-mesh-system
+kubectl apply -f infrastructure/knative/knative-triggers.yaml -n event-mesh-system
 
 # 4. Deploy microservices
 kubectl apply -f movimiento-inventario/k8s-deployment.yaml -n event-mesh-system
@@ -91,19 +94,32 @@ kubectl apply -f telemetry/prometheus.yaml -n event-mesh-system
 kubectl apply -f telemetry/grafana.yaml -n event-mesh-system
 ```
 
-## EventMesh Bridge
+## Knative Eventing
 
-The EventMesh Bridge is a lightweight Python-based service that provides cross-broker event routing:
+Knative Eventing provides cloud-native event routing with the following components:
 
-- **Kafka to RabbitMQ**: Routes `StockBajo` events from Kafka to RabbitMQ
-- **Health Monitoring**: HTTP endpoints for health checks and metrics
-- **Resource Efficient**: Minimal CPU and memory requirements
-- **Observability**: Prometheus metrics and structured logging
+### Brokers
+- **Kafka Broker**: Handles Kafka events with native Kafka integration
+- **RabbitMQ Broker**: Manages RabbitMQ events with AMQP support
+- **Pulsar Broker**: Processes Pulsar events with native Pulsar integration
 
-### Bridge Endpoints
+### Triggers
+- **Kafka to RabbitMQ Trigger**: Routes `StockBajo` events from Kafka to RabbitMQ
+- **RabbitMQ to Pulsar Trigger**: Routes `InventarioRecibido` events from RabbitMQ to Pulsar
 
-- **Health Check**: `http://eventmesh-bridge-service:8080/health`
-- **Metrics**: `http://eventmesh-bridge-service:8080/metrics`
+### Event Sources
+- **Kafka Source**: Consumes events from Kafka topics
+- **RabbitMQ Source**: Consumes events from RabbitMQ queues
+- **Pulsar Source**: Consumes events from Pulsar topics
+
+### Bridge Services
+- **Kafka to RabbitMQ Bridge**: HTTP service for event transformation
+- **RabbitMQ to Pulsar Bridge**: HTTP service for event transformation
+
+### Health Endpoints
+- **Kafka to RabbitMQ Bridge**: `http://kafka-to-rabbitmq-bridge:8080/health`
+- **RabbitMQ to Pulsar Bridge**: `http://rabbitmq-to-pulsar-bridge:8080/health`
+- **Event Sources**: `http://rabbitmq-event-source:8080/health`, `http://pulsar-event-source:8080/health`
 
 ## Testing
 
@@ -112,8 +128,8 @@ The EventMesh Bridge is a lightweight Python-based service that provides cross-b
 # Test the complete event flow
 ./scripts/test-event-flow.sh
 
-# Test EventMesh Bridge specifically
-./scripts/test-eventmesh-bridge.sh
+# Test Knative Eventing specifically
+./scripts/test-knative-eventing.sh
 ```
 
 ### Manual Testing
@@ -121,12 +137,17 @@ The EventMesh Bridge is a lightweight Python-based service that provides cross-b
 # Check pod status
 kubectl get pods -n event-mesh-system
 
-# Check EventMesh Bridge health
-kubectl port-forward -n event-mesh-system svc/eventmesh-bridge-service 8080:8080
+# Check Knative Eventing status
+kubectl get brokers -n event-mesh-system
+kubectl get triggers -n event-mesh-system
+
+# Check bridge services health
+kubectl port-forward -n event-mesh-system svc/kafka-to-rabbitmq-bridge 8080:8080
 curl http://localhost:8080/health
 
 # View logs
-kubectl logs -n event-mesh-system -l app=eventmesh-bridge
+kubectl logs -n event-mesh-system -l app=kafka-to-rabbitmq-bridge
+kubectl logs -n event-mesh-system -l app=rabbitmq-to-pulsar-bridge
 ```
 
 ## Configuration
@@ -144,7 +165,7 @@ See `DYNAMODB_CONFIG.md` for detailed configuration options.
 
 The system is optimized for local development with minimal resource requirements:
 
-- **EventMesh Bridge**: 25m CPU, 64Mi memory
+- **Knative Bridge Services**: 25m CPU, 64Mi memory each
 - **Microservices**: 50m CPU, 64-128Mi memory each
 - **Infrastructure**: Reduced resource requests for local clusters
 
@@ -162,7 +183,7 @@ Each service includes:
 ### Common Issues
 
 1. **Pod Scheduling Issues**: Check cluster resources with `kubectl describe nodes`
-2. **EventMesh Bridge Timeout**: The bridge may take 2-3 minutes to start due to dependency installation
+2. **Knative Eventing Timeout**: The bridge services may take 2-3 minutes to start due to dependency installation
 3. **DynamoDB Connection**: Ensure tables exist and credentials are correct
 4. **Kafka Connectivity**: Verify Kafka topics are created successfully
 
@@ -174,7 +195,8 @@ kubectl get pods -n event-mesh-system
 
 # View specific service logs
 kubectl logs -n event-mesh-system -l app=movimiento-inventario
-kubectl logs -n event-mesh-system -l app=eventmesh-bridge
+kubectl logs -n event-mesh-system -l app=kafka-to-rabbitmq-bridge
+kubectl logs -n event-mesh-system -l app=rabbitmq-to-pulsar-bridge
 
 # Check resource usage
 kubectl top pods -n event-mesh-system
